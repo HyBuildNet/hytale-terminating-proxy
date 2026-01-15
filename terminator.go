@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Theodoree/quic-terminator/debug"
 	"github.com/quic-go/quic-go"
+	"quic-terminator/debug"
 )
 
 // Config holds configuration for the Terminator.

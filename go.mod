@@ -1,4 +1,4 @@
-module github.com/Theodoree/quic-terminator
+module quic-terminator
 
 go 1.25.0
 

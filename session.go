@@ -6,8 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/Theodoree/quic-terminator/debug"
 	"github.com/quic-go/quic-go"
+	"quic-terminator/debug"
 )
 
 // streamBufPool provides reusable 32KB buffers for stream copying.
