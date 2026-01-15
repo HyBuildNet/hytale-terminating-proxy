@@ -126,14 +126,14 @@ func TestRegisterBackend(t *testing.T) {
 	defer term.Close()
 
 	// Register a backend
-	term.RegisterBackend("aabbccdd", "backend.example.com:25565")
+	term.RegisterBackend("aabbccdd", "backend.example.com:5521")
 
 	// Verify it's stored
 	entry, ok := term.backends.Load("aabbccdd")
 	if !ok {
 		t.Error("Backend should be registered")
 	}
-	if entry.(string) != "backend.example.com:25565" {
+	if entry.(string) != "backend.example.com:5521" {
 		t.Errorf("Backend mismatch: got %s", entry)
 	}
 
@@ -186,11 +186,11 @@ func TestNew_WithTargets(t *testing.T) {
 	term, err := New(Config{
 		Listen: "localhost:0",
 		Targets: map[string]*TargetConfig{
-			"server1:25565": {
+			"server1:5521": {
 				CertFile: certFile,
 				KeyFile:  keyFile,
 			},
-			"server2:25565": {
+			"server2:5521": {
 				CertFile:    cert2File,
 				KeyFile:     key2File,
 				BackendMTLS: true,

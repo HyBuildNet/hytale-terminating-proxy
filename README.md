@@ -36,7 +36,7 @@ cfg := terminator.Config{
         KeyFile:  "server.key",
     },
     Targets: map[string]*terminator.TargetConfig{
-        "backend1:25565": {
+        "backend1:5521": {
             CertFile:    "backend1.crt",
             KeyFile:     "backend1.key",
             BackendMTLS: true,
@@ -52,7 +52,7 @@ defer term.Close()
 
 // Register backend for incoming connection (by DCID)
 dcid := terminator.ParseQUICDCID(initialPacket)
-term.RegisterBackend(dcid, "backend1:25565")
+term.RegisterBackend(dcid, "backend1:5521")
 ```
 
 ## Configuration
