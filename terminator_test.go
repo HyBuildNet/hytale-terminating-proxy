@@ -72,9 +72,11 @@ func TestNew(t *testing.T) {
 	certFile, keyFile := createTestCert(t)
 
 	term, err := New(Config{
-		Listen:   "localhost:0",
-		CertFile: certFile,
-		KeyFile:  keyFile,
+		Listen: "localhost:0",
+		Default: &TargetConfig{
+			CertFile: certFile,
+			KeyFile:  keyFile,
+		},
 	})
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
@@ -88,12 +90,23 @@ func TestNew(t *testing.T) {
 
 func TestNew_InvalidCert(t *testing.T) {
 	_, err := New(Config{
-		Listen:   "localhost:0",
-		CertFile: "/nonexistent/cert.pem",
-		KeyFile:  "/nonexistent/key.pem",
+		Listen: "localhost:0",
+		Default: &TargetConfig{
+			CertFile: "/nonexistent/cert.pem",
+			KeyFile:  "/nonexistent/key.pem",
+		},
 	})
 	if err == nil {
 		t.Error("Expected error for invalid cert paths")
+	}
+}
+
+func TestNew_NoCerts(t *testing.T) {
+	_, err := New(Config{
+		Listen: "localhost:0",
+	})
+	if err == nil {
+		t.Error("Expected error when no certificates configured")
 	}
 }
 
@@ -101,9 +114,11 @@ func TestRegisterBackend(t *testing.T) {
 	certFile, keyFile := createTestCert(t)
 
 	term, err := New(Config{
-		Listen:   "localhost:0",
-		CertFile: certFile,
-		KeyFile:  keyFile,
+		Listen: "localhost:0",
+		Default: &TargetConfig{
+			CertFile: certFile,
+			KeyFile:  keyFile,
+		},
 	})
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
@@ -135,9 +150,11 @@ func TestClose(t *testing.T) {
 	certFile, keyFile := createTestCert(t)
 
 	term, err := New(Config{
-		Listen:   "localhost:0",
-		CertFile: certFile,
-		KeyFile:  keyFile,
+		Listen: "localhost:0",
+		Default: &TargetConfig{
+			CertFile: certFile,
+			KeyFile:  keyFile,
+		},
 	})
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
@@ -159,6 +176,42 @@ func TestClose(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Error("Close timed out")
+	}
+}
+
+func TestNew_WithTargets(t *testing.T) {
+	certFile, keyFile := createTestCert(t)
+	cert2File, key2File := createTestCert(t)
+
+	term, err := New(Config{
+		Listen: "localhost:0",
+		Targets: map[string]*TargetConfig{
+			"server1:25565": {
+				CertFile: certFile,
+				KeyFile:  keyFile,
+			},
+			"server2:25565": {
+				CertFile:    cert2File,
+				KeyFile:     key2File,
+				BackendMTLS: true,
+			},
+		},
+		Default: &TargetConfig{
+			CertFile: certFile,
+			KeyFile:  keyFile,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer term.Close()
+
+	// Verify target certs loaded
+	if len(term.targetCerts) != 2 {
+		t.Errorf("Expected 2 target certs, got %d", len(term.targetCerts))
+	}
+	if term.defaultCert == nil {
+		t.Error("Default cert should be loaded")
 	}
 }
 

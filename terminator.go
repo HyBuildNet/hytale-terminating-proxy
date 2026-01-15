@@ -3,6 +3,8 @@ package terminator
 import (
 	"context"
 	"crypto/tls"
+	"errors"
+	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -13,17 +15,23 @@ import (
 	"quic-terminator/debug"
 )
 
+// TargetConfig holds TLS config for a specific backend target.
+type TargetConfig struct {
+	CertFile    string `json:"cert"`
+	KeyFile     string `json:"key"`
+	BackendMTLS bool   `json:"backend_mtls"`
+}
+
 // Config holds configuration for the Terminator.
 type Config struct {
 	// Listen address (":5521" or "localhost:0" for ephemeral port)
 	Listen string
 
-	// TLS Certificate and Key paths
-	CertFile string
-	KeyFile  string
+	// Target-specific TLS configs (backend address → config)
+	Targets map[string]*TargetConfig
 
-	// Use same cert as client cert for backend mTLS
-	BackendMTLS bool
+	// Default TLS config (fallback if no target match)
+	Default *TargetConfig
 
 	// Debug enables debug logging
 	Debug bool
@@ -36,18 +44,27 @@ type Config struct {
 	MaxChunkSize     int // Skip chunks larger than this (0 = no limit, default 1MB)
 }
 
+// loadedTarget holds a loaded certificate and its config.
+type loadedTarget struct {
+	cert        *tls.Certificate
+	backendMTLS bool
+}
+
 // Terminator terminates QUIC connections and bridges them to backends.
 // It runs an internal QUIC listener that accepts connections forwarded by a proxy.
 type Terminator struct {
-	config     Config
-	transport  *quic.Transport
-	listener   *quic.Listener
-	tracker    *dcidTracker
-	clientCert *tls.Certificate // Client certificate for backend mTLS
+	config    Config
+	transport *quic.Transport
+	listener  *quic.Listener
+	tracker   *dcidTracker
 
 	// InternalAddr is the address of the internal listener.
 	// The proxy forwarder should send packets here.
 	InternalAddr string
+
+	// Target → loaded certificate + config
+	targetCerts map[string]*loadedTarget
+	defaultCert *loadedTarget
 
 	// DCID → backend mapping (set by RegisterBackend, read by handleConnection)
 	backends sync.Map // dcid (hex string) → backend address (string)
@@ -69,30 +86,46 @@ func New(cfg Config) (*Terminator, error) {
 		debug.SetEnabled(true)
 	}
 
-	t := &Terminator{config: cfg}
+	t := &Terminator{
+		config:      cfg,
+		targetCerts: make(map[string]*loadedTarget),
+	}
 	t.ctx, t.cancel = context.WithCancel(context.Background())
 
-	// Load certificate
-	cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
-	if err != nil {
-		return nil, err
+	// Load default cert if configured
+	if cfg.Default != nil {
+		cert, err := tls.LoadX509KeyPair(cfg.Default.CertFile, cfg.Default.KeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("default cert: %w", err)
+		}
+		t.defaultCert = &loadedTarget{
+			cert:        &cert,
+			backendMTLS: cfg.Default.BackendMTLS,
+		}
+		log.Printf("[terminator] loaded default certificate")
 	}
 
-	// Store certificate for backend mTLS if enabled
-	if cfg.BackendMTLS {
-		t.clientCert = &cert
-		log.Printf("[terminator] backend mTLS enabled")
+	// Load target-specific certs
+	for target, tcfg := range cfg.Targets {
+		cert, err := tls.LoadX509KeyPair(tcfg.CertFile, tcfg.KeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("cert for %s: %w", target, err)
+		}
+		t.targetCerts[target] = &loadedTarget{
+			cert:        &cert,
+			backendMTLS: tcfg.BackendMTLS,
+		}
+		log.Printf("[terminator] loaded certificate for target %s", target)
 	}
 
+	// Validate: need at least default or one target
+	if t.defaultCert == nil && len(t.targetCerts) == 0 {
+		return nil, errors.New("no certificates configured (need default or targets)")
+	}
+
+	// TLS config with dynamic cert selection
 	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		// Accept any ALPN protocol the client offers
-		GetConfigForClient: func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
-			return &tls.Config{
-				Certificates: []tls.Certificate{cert},
-				NextProtos:   chi.SupportedProtos, // Mirror client's offered protocols
-			}, nil
-		},
+		GetConfigForClient: t.getConfigForClient,
 	}
 
 	// Setup internal listener address
@@ -137,6 +170,51 @@ func New(cfg Config) (*Terminator, error) {
 	go t.acceptLoop()
 
 	return t, nil
+}
+
+// getConfigForClient selects the TLS certificate based on backend target.
+// Called during TLS handshake - looks up: RemoteAddr → DCID → Backend → Cert
+func (t *Terminator) getConfigForClient(chi *tls.ClientHelloInfo) (*tls.Config, error) {
+	var cert *tls.Certificate
+
+	// Try to find target-specific cert
+	if chi.Conn != nil {
+		addr := chi.Conn.RemoteAddr().String()
+		dcid := t.tracker.GetDCID(addr)
+
+		if dcid != "" {
+			if entry, ok := t.backends.Load(dcid); ok {
+				backend := entry.(string)
+				if target, ok := t.targetCerts[backend]; ok {
+					cert = target.cert
+					debug.Printf("[terminator] using cert for target %s", backend)
+				}
+			}
+		}
+	}
+
+	// Fallback to default
+	if cert == nil && t.defaultCert != nil {
+		cert = t.defaultCert.cert
+		debug.Printf("[terminator] using default cert")
+	}
+
+	if cert == nil {
+		return nil, errors.New("no certificate available for connection")
+	}
+
+	return &tls.Config{
+		Certificates: []tls.Certificate{*cert},
+		NextProtos:   chi.SupportedProtos, // Mirror client's offered protocols
+	}, nil
+}
+
+// getTargetConfig returns the loaded target config for a backend address.
+func (t *Terminator) getTargetConfig(backend string) *loadedTarget {
+	if target, ok := t.targetCerts[backend]; ok {
+		return target
+	}
+	return t.defaultCert
 }
 
 // RegisterBackend stores the backend address for a DCID.
@@ -204,6 +282,9 @@ func (t *Terminator) handleConnection(clientConn *quic.Conn) {
 	}
 	backend := entry.(string)
 
+	// Get target config for mTLS
+	targetCfg := t.getTargetConfig(backend)
+
 	// Cleanup mappings (one-time use)
 	t.tracker.Delete(remoteAddr)
 	t.backends.Delete(dcid)
@@ -224,9 +305,9 @@ func (t *Terminator) handleConnection(clientConn *quic.Conn) {
 	if alpn != "" {
 		backendTLS.NextProtos = []string{alpn}
 	}
-	// Add client certificate for mTLS if configured
-	if t.clientCert != nil {
-		backendTLS.Certificates = []tls.Certificate{*t.clientCert}
+	// Add client certificate for mTLS if configured for this target
+	if targetCfg != nil && targetCfg.backendMTLS && targetCfg.cert != nil {
+		backendTLS.Certificates = []tls.Certificate{*targetCfg.cert}
 	}
 
 	serverConn, err := quic.DialAddr(dialCtx, backend, backendTLS, &quic.Config{
