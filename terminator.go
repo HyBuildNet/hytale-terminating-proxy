@@ -19,7 +19,7 @@ import (
 type TargetConfig struct {
 	CertFile    string `json:"cert"`
 	KeyFile     string `json:"key"`
-	BackendMTLS bool   `json:"backend_mtls"`
+	BackendMTLS *bool  `json:"backend_mtls,omitempty"` // default: true
 }
 
 // Config holds configuration for the Terminator.
@@ -100,7 +100,7 @@ func New(cfg Config) (*Terminator, error) {
 		}
 		t.defaultCert = &loadedTarget{
 			cert:        &cert,
-			backendMTLS: cfg.Default.BackendMTLS,
+			backendMTLS: cfg.Default.BackendMTLS == nil || *cfg.Default.BackendMTLS,
 		}
 		log.Printf("[terminator] loaded default certificate")
 	}
@@ -113,7 +113,7 @@ func New(cfg Config) (*Terminator, error) {
 		}
 		t.targetCerts[target] = &loadedTarget{
 			cert:        &cert,
-			backendMTLS: tcfg.BackendMTLS,
+			backendMTLS: tcfg.BackendMTLS == nil || *tcfg.BackendMTLS,
 		}
 		log.Printf("[terminator] loaded certificate for target %s", target)
 	}

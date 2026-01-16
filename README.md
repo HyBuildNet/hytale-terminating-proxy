@@ -37,9 +37,8 @@ cfg := terminator.Config{
     },
     Targets: map[string]*terminator.TargetConfig{
         "backend1:5521": {
-            CertFile:    "backend1.crt",
-            KeyFile:     "backend1.key",
-            BackendMTLS: true,
+            CertFile: "backend1.crt",
+            KeyFile:  "backend1.key",
         },
     },
 }
@@ -75,7 +74,7 @@ term.RegisterBackend(dcid, "backend1:5521")
 |-------|-------------|
 | `CertFile` | Path to TLS certificate |
 | `KeyFile` | Path to TLS private key |
-| `BackendMTLS` | Use certificate as client cert for backend mTLS |
+| `BackendMTLS` | Use certificate as client cert for backend mTLS (default: `true`) |
 
 ## How It Works
 
