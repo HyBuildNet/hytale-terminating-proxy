@@ -18,50 +18,25 @@ var streamBufPool = sync.Pool{
 	},
 }
 
-// LogConfig holds per-direction logging settings.
-type LogConfig struct {
-	MaxChunks int // Max chunks to log (0 = unlimited when debug enabled)
-	Skip      int // Skip first N chunks
-	MaxSize   int // Skip chunks larger than this
-}
-
 // session represents a bridged connection between client and server.
 type session struct {
-	clientConn *quic.Conn
-	serverConn *quic.Conn
-	ctx        context.Context
-	cancel     context.CancelFunc
-	closed     atomic.Bool
-	wg         sync.WaitGroup
-
-	// Logging config (per direction)
-	clientLog *LogConfig
-	serverLog *LogConfig
+	clientConn  *quic.Conn
+	serverConn  *quic.Conn
+	ctx         context.Context
+	cancel      context.CancelFunc
+	closed      atomic.Bool
+	wg          sync.WaitGroup
+	packetLimit int // Debug: max packets to log per stream (0 = unlimited)
 }
 
-func newSession(client, server *quic.Conn, cfg *Config) *session {
+func newSession(client, server *quic.Conn, packetLimit int) *session {
 	ctx, cancel := context.WithCancel(context.Background())
-
-	maxSize := cfg.MaxChunkSize
-	if maxSize == 0 {
-		maxSize = 1024 * 1024 // Default 1MB
-	}
-
 	return &session{
-		clientConn: client,
-		serverConn: server,
-		ctx:        ctx,
-		cancel:     cancel,
-		clientLog: &LogConfig{
-			MaxChunks: cfg.LogClientChunks,
-			Skip:      cfg.SkipClientChunks,
-			MaxSize:   maxSize,
-		},
-		serverLog: &LogConfig{
-			MaxChunks: cfg.LogServerChunks,
-			Skip:      cfg.SkipServerChunks,
-			MaxSize:   maxSize,
-		},
+		clientConn:  client,
+		serverConn:  server,
+		ctx:         ctx,
+		cancel:      cancel,
+		packetLimit: packetLimit,
 	}
 }
 
@@ -110,30 +85,28 @@ func (s *session) copyBidiStream(src, dst *quic.Stream, srcIsClient bool) {
 	defer src.Close()
 	defer dst.Close()
 
-	// Log config based on direction
-	var fwdLog, revLog *LogConfig
-	if srcIsClient {
-		fwdLog = s.clientLog // Client → Server
-		revLog = s.serverLog // Server → Client
-	} else {
-		fwdLog = s.serverLog
-		revLog = s.clientLog
-	}
-
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	// src → dst
 	go func() {
 		defer wg.Done()
-		s.copyStream(dst, src, "[fwd]", fwdLog)
+		if debug.IsEnabled() {
+			s.copyStreamParsed(dst, src, srcIsClient)
+		} else {
+			s.copyStream(dst, src)
+		}
 		dst.Close() // Send FIN
 	}()
 
 	// dst → src (responses)
 	go func() {
 		defer wg.Done()
-		s.copyStream(src, dst, "[rev]", revLog)
+		if debug.IsEnabled() {
+			s.copyStreamParsed(src, dst, !srcIsClient)
+		} else {
+			s.copyStream(src, dst)
+		}
 		src.Close()
 	}()
 
@@ -177,41 +150,22 @@ func (s *session) copyUniStream(src *quic.ReceiveStream, dst *quic.SendStream, s
 	defer src.CancelRead(0) // Cancel source when done
 	defer dst.Close()
 
-	logCfg := s.serverLog
-	if srcIsClient {
-		logCfg = s.clientLog
+	if debug.IsEnabled() {
+		s.copyStreamParsed(dst, src, srcIsClient)
+	} else {
+		s.copyStream(dst, src)
 	}
-
-	s.copyStream(dst, src, "[uni]", logCfg)
 }
 
-// copyStream copies data with buffer pooling and optional debug logging.
-func (s *session) copyStream(dst io.Writer, src io.Reader, prefix string, logCfg *LogConfig) (int64, error) {
+// copyStream copies data with buffer pooling.
+func (s *session) copyStream(dst io.Writer, src io.Reader) (int64, error) {
 	buf := streamBufPool.Get().(*[]byte)
 	defer streamBufPool.Put(buf)
 
 	var total int64
-	var chunkNum, logged, skipped int
-
 	for {
 		n, err := src.Read(*buf)
 		if n > 0 {
-			// Debug logging with config
-			if debug.IsEnabled() && logCfg != nil {
-				chunkNum++
-
-				// Skip first N
-				if skipped < logCfg.Skip {
-					skipped++
-				} else if logCfg.MaxChunks == 0 || logged < logCfg.MaxChunks {
-					// Skip large chunks
-					if logCfg.MaxSize == 0 || n <= logCfg.MaxSize {
-						logged++
-						debug.LogChunk(prefix, logged, (*buf)[:n])
-					}
-				}
-			}
-
 			nw, werr := dst.Write((*buf)[:n])
 			total += int64(nw)
 			if werr != nil {

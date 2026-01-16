@@ -33,15 +33,11 @@ type Config struct {
 	// Default TLS config (fallback if no target match)
 	Default *TargetConfig
 
-	// Debug enables debug logging
+	// Debug enables debug logging and packet parsing
 	Debug bool
 
-	// Logging config per direction
-	LogClientChunks  int // Number of client chunks to log (0 = disabled)
-	LogServerChunks  int // Number of server chunks to log (0 = disabled)
-	SkipClientChunks int // Client chunks to skip before logging
-	SkipServerChunks int // Server chunks to skip before logging
-	MaxChunkSize     int // Skip chunks larger than this (0 = no limit, default 1MB)
+	// DebugPacketLimit limits packets logged per stream (0 = unlimited)
+	DebugPacketLimit int
 }
 
 // loadedTarget holds a loaded certificate and its config.
@@ -329,7 +325,7 @@ func (t *Terminator) handleConnection(clientConn *quic.Conn) {
 	}
 
 	// Create session and start bridging
-	sess := newSession(clientConn, serverConn, &t.config)
+	sess := newSession(clientConn, serverConn, t.config.DebugPacketLimit)
 	sessionID := t.sessionCount.Add(1)
 	t.sessions.Store(sessionID, sess)
 	defer t.sessions.Delete(sessionID)
