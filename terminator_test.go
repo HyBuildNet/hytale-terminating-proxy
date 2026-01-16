@@ -191,9 +191,8 @@ func TestNew_WithTargets(t *testing.T) {
 				KeyFile:  keyFile,
 			},
 			"server2:5521": {
-				CertFile:    cert2File,
-				KeyFile:     key2File,
-				BackendMTLS: true,
+				CertFile: cert2File,
+				KeyFile:  key2File,
 			},
 		},
 		Default: &TargetConfig{
