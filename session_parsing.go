@@ -8,6 +8,46 @@ import (
 	"quic-terminator/debug"
 )
 
+// copyStreamWithHandlers parses packets and runs through the handler chain.
+// Allows modification and filtering of packets by handlers.
+func (s *session) copyStreamWithHandlers(dst io.Writer, src io.Reader, fromClient bool) (int64, error) {
+	reader := protohytale.NewPacketReader(src)
+	var total int64
+	var headerBuf [8]byte
+
+	for {
+		pkt, err := reader.ReadPacket()
+		if err != nil {
+			if err == io.EOF {
+				return total, nil
+			}
+			return total, err
+		}
+
+		// Run handler chain
+		modifiedData, drop := s.term.runPacketHandlers(s.dcid, pkt, fromClient)
+		if drop {
+			continue // Don't forward this packet
+		}
+		if modifiedData != nil {
+			pkt.Data = modifiedData
+		}
+
+		// Forward packet
+		binary.LittleEndian.PutUint32(headerBuf[0:4], uint32(len(pkt.Data)))
+		binary.LittleEndian.PutUint32(headerBuf[4:8], pkt.ID)
+
+		if _, err := dst.Write(headerBuf[:]); err != nil {
+			return total, err
+		}
+		n, err := dst.Write(pkt.Data)
+		total += int64(8 + n)
+		if err != nil {
+			return total, err
+		}
+	}
+}
+
 // copyStreamParsed copies data while parsing and logging Hytale packets.
 // Used in debug mode to inspect protocol traffic.
 func (s *session) copyStreamParsed(dst io.Writer, src io.Reader, fromClient bool) (int64, error) {

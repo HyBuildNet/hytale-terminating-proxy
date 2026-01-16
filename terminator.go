@@ -12,8 +12,21 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"protohytale"
 	"quic-terminator/debug"
 )
+
+// PacketAction determines what happens after a handler processes a packet.
+type PacketAction int
+
+const (
+	PacketContinue PacketAction = iota // Pass to next handler, then forward
+	PacketDrop                         // Don't forward the packet
+)
+
+// PacketHandler processes a decrypted Hytale protocol packet.
+// Return (modifiedData, action). If modifiedData != nil, it replaces pkt.Data.
+type PacketHandler func(dcid string, pkt *protohytale.Packet, fromClient bool) (modifiedData []byte, action PacketAction)
 
 // TargetConfig holds TLS config for a specific backend target.
 type TargetConfig struct {
@@ -73,6 +86,10 @@ type Terminator struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// Packet handlers (sequential execution)
+	packetHandlers   []PacketHandler
+	packetHandlersMu sync.RWMutex
 }
 
 // New creates a new Terminator with the given configuration.
@@ -231,6 +248,42 @@ func (t *Terminator) UnregisterBackend(dcid string) {
 	t.backends.Delete(dcid)
 }
 
+// AddPacketHandler adds a handler for decrypted packets.
+// Handlers are executed in the order they are added.
+func (t *Terminator) AddPacketHandler(h PacketHandler) {
+	t.packetHandlersMu.Lock()
+	t.packetHandlers = append(t.packetHandlers, h)
+	t.packetHandlersMu.Unlock()
+}
+
+// HasPacketHandlers returns true if any handlers are registered.
+func (t *Terminator) HasPacketHandlers() bool {
+	t.packetHandlersMu.RLock()
+	defer t.packetHandlersMu.RUnlock()
+	return len(t.packetHandlers) > 0
+}
+
+// runPacketHandlers executes all handlers sequentially.
+// Returns (finalData, shouldDrop).
+func (t *Terminator) runPacketHandlers(dcid string, pkt *protohytale.Packet, fromClient bool) ([]byte, bool) {
+	t.packetHandlersMu.RLock()
+	handlers := t.packetHandlers
+	t.packetHandlersMu.RUnlock()
+
+	var currentData []byte
+	for _, h := range handlers {
+		modData, action := h(dcid, pkt, fromClient)
+		if action == PacketDrop {
+			return nil, true
+		}
+		if modData != nil {
+			currentData = modData
+			pkt.Data = modData // For next handler
+		}
+	}
+	return currentData, false
+}
+
 // acceptLoop accepts connections on the internal listener.
 func (t *Terminator) acceptLoop() {
 	defer t.wg.Done()
@@ -325,7 +378,7 @@ func (t *Terminator) handleConnection(clientConn *quic.Conn) {
 	}
 
 	// Create session and start bridging
-	sess := newSession(clientConn, serverConn, t.config.DebugPacketLimit)
+	sess := newSession(clientConn, serverConn, t.config.DebugPacketLimit, t, dcid)
 	sessionID := t.sessionCount.Add(1)
 	t.sessions.Store(sessionID, sess)
 	defer t.sessions.Delete(sessionID)

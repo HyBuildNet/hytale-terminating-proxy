@@ -27,9 +27,13 @@ type session struct {
 	closed      atomic.Bool
 	wg          sync.WaitGroup
 	packetLimit int // Debug: max packets to log per stream (0 = unlimited)
+
+	// For packet handler support
+	term *Terminator // Parent terminator (for handler access)
+	dcid string      // DCID of this session
 }
 
-func newSession(client, server *quic.Conn, packetLimit int) *session {
+func newSession(client, server *quic.Conn, packetLimit int, term *Terminator, dcid string) *session {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &session{
 		clientConn:  client,
@@ -37,6 +41,8 @@ func newSession(client, server *quic.Conn, packetLimit int) *session {
 		ctx:         ctx,
 		cancel:      cancel,
 		packetLimit: packetLimit,
+		term:        term,
+		dcid:        dcid,
 	}
 }
 
@@ -91,7 +97,9 @@ func (s *session) copyBidiStream(src, dst *quic.Stream, srcIsClient bool) {
 	// src → dst
 	go func() {
 		defer wg.Done()
-		if debug.IsEnabled() {
+		if s.term.HasPacketHandlers() {
+			s.copyStreamWithHandlers(dst, src, srcIsClient)
+		} else if debug.IsEnabled() {
 			s.copyStreamParsed(dst, src, srcIsClient)
 		} else {
 			s.copyStream(dst, src)
@@ -102,7 +110,9 @@ func (s *session) copyBidiStream(src, dst *quic.Stream, srcIsClient bool) {
 	// dst → src (responses)
 	go func() {
 		defer wg.Done()
-		if debug.IsEnabled() {
+		if s.term.HasPacketHandlers() {
+			s.copyStreamWithHandlers(src, dst, !srcIsClient)
+		} else if debug.IsEnabled() {
 			s.copyStreamParsed(src, dst, !srcIsClient)
 		} else {
 			s.copyStream(src, dst)
@@ -150,7 +160,9 @@ func (s *session) copyUniStream(src *quic.ReceiveStream, dst *quic.SendStream, s
 	defer src.CancelRead(0) // Cancel source when done
 	defer dst.Close()
 
-	if debug.IsEnabled() {
+	if s.term.HasPacketHandlers() {
+		s.copyStreamWithHandlers(dst, src, srcIsClient)
+	} else if debug.IsEnabled() {
 		s.copyStreamParsed(dst, src, srcIsClient)
 	} else {
 		s.copyStream(dst, src)
