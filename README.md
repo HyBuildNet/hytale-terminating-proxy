@@ -61,12 +61,8 @@ term.RegisterBackend(dcid, "backend1:5521")
 | `Listen` | Internal listener address (`:5521` or `localhost:0` for ephemeral) |
 | `Default` | Fallback certificate configuration |
 | `Targets` | Map of backend address to certificate configuration |
-| `Debug` | Enable debug logging |
-| `LogClientChunks` | Number of client stream chunks to log |
-| `LogServerChunks` | Number of server stream chunks to log |
-| `SkipClientChunks` | Skip first N client chunks before logging |
-| `SkipServerChunks` | Skip first N server chunks before logging |
-| `MaxChunkSize` | Skip chunks larger than this (default: 1MB) |
+| `Debug` | Enable packet parsing and logging |
+| `DebugPacketLimit` | Max packets to log per stream (0 = unlimited) |
 
 ### Target Configuration
 
@@ -75,6 +71,21 @@ term.RegisterBackend(dcid, "backend1:5521")
 | `CertFile` | Path to TLS certificate |
 | `KeyFile` | Path to TLS private key |
 | `BackendMTLS` | Use certificate as client cert for backend mTLS (default: `true`) |
+
+## Packet Handlers
+
+Register handlers to inspect, filter, or modify decrypted Hytale protocol packets:
+
+```go
+term.AddPacketHandler(func(dcid string, pkt *protohytale.Packet, fromClient bool) ([]byte, PacketAction) {
+    // Return nil, PacketContinue to pass through unchanged
+    // Return nil, PacketDrop to drop the packet
+    // Return modifiedData, PacketContinue to modify and forward
+    return nil, PacketContinue
+})
+```
+
+Handlers are executed in registration order. If any handler returns `PacketDrop`, the packet is not forwarded.
 
 ## How It Works
 
